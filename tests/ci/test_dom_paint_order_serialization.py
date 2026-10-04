@@ -7,7 +7,9 @@ DOMTreeSerializer.serialize_tree() must respect that flag for TEXT_NODEs, or
 covered text still ends up in the DOM string sent to the LLM every step.
 """
 
-from browser_use.dom.serializer.paint_order import PaintOrderRemover
+import pytest
+
+from browser_use.dom.serializer.paint_order import PaintOrderRemover, Rect
 from browser_use.dom.serializer.serializer import DOMTreeSerializer
 from browser_use.dom.views import DOMRect, EnhancedDOMTreeNode, EnhancedSnapshotNode, NodeType, SimplifiedNode
 
@@ -50,6 +52,40 @@ def _make_node(node_type: NodeType, node_value: str, snapshot_node: EnhancedSnap
 
 
 class TestPaintOrderTextExclusion:
+	def test_rect_rejects_non_positive_area(self):
+		with pytest.raises(ValueError, match='positive-area'):
+			Rect(10, 0, 0, 10)
+
+		with pytest.raises(ValueError, match='positive-area'):
+			Rect(0, 0, 0, 10)
+
+	def test_non_positive_bounds_do_not_cover_valid_nodes(self):
+		zero_width_bounds = DOMRect(x=0, y=0, width=0, height=20)
+		valid_bounds = DOMRect(x=0, y=0, width=100, height=20)
+		candidate_node = _make_node(
+			NodeType.TEXT_NODE,
+			'CANDIDATE TEXT',
+			_make_snapshot(paint_order=1, bounds=valid_bounds),
+		)
+		invalid_top_node = _make_node(
+			NodeType.TEXT_NODE,
+			'ZERO WIDTH TOP LAYER',
+			_make_snapshot(paint_order=2, bounds=zero_width_bounds),
+		)
+
+		candidate_simplified = SimplifiedNode(original_node=candidate_node, children=[])
+		invalid_top_simplified = SimplifiedNode(original_node=invalid_top_node, children=[])
+		wrapper = SimplifiedNode(
+			original_node=_make_node(NodeType.ELEMENT_NODE, '', None),
+			children=[candidate_simplified, invalid_top_simplified],
+			should_display=False,
+		)
+
+		PaintOrderRemover(wrapper).calculate_paint_order()
+
+		assert candidate_simplified.ignored_by_paint_order is False
+		assert invalid_top_simplified.ignored_by_paint_order is False
+
 	def test_text_fully_covered_by_another_element_is_not_serialized(self):
 		"""Two text nodes at identical bounds: the lower paint-order one is fully
 		covered by the higher paint-order one and must be excluded from the
